@@ -72,22 +72,3 @@ jobs:
           files: ./coverage.out
           token: ${{ secrets.CODECOV_TOKEN }}
         if: github.ref == 'refs/heads/main'
-
-  build:
-    name: Build Binary
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.24'
-
-      - name: Build package
-        run: go build -v ./pkg/application/...
-
-      # Опционально: если вы добавите main.go в будущем — раскомментируйте
-      # - name: Build application
-      #   run: go build -v .
