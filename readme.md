@@ -97,9 +97,9 @@ make test-coverage
 
 ```go
 type Module interface {
-	Register() error // Выполняется до Start
-	Start() error    // Запуск компонента
-	Stop() error     // Корректное завершение
+	Register(ctx context.Context) error // Выполняется до Start
+	Start(ctx context.Context) error    // Запуск компонента
+	Stop(ctx context.Context) error     // Корректное завершение
 }
 ```
 
@@ -113,6 +113,7 @@ type Module interface {
 package main
 
 import (
+	"context"
 	"log/slog"
 	"time"
 
@@ -121,18 +122,18 @@ import (
 
 type HTTPServer struct{}
 
-func (h *HTTPServer) Register() error {
+func (h *HTTPServer) Register(_ context.Context) error {
 	slog.Info("HTTP server registering...")
 	return nil
 }
 
-func (h *HTTPServer) Start() error {
+func (h *HTTPServer) Start(_ context.Context) error {
 	slog.Info("HTTP server starting...")
 	// запуск сервера
 	return nil
 }
 
-func (h *HTTPServer) Stop() error {
+func (h *HTTPServer) Stop(_ context.Context) error {
 	slog.Info("HTTP server stopping...")
 	// graceful shutdown
 	return nil
@@ -145,12 +146,13 @@ func main() {
 		application.WithEnvironment("production"),
 		application.WithGracefulTimeout(15*time.Second),
 	)
-	
+
 	if err := app.Register(&HTTPServer{}); err != nil {
 		slog.Error(err.Error())
 	}
 
-	if err := app.Run(); err != nil {
+	ctx := context.Background()
+	if err := app.Run(ctx); err != nil {
 		slog.Error(err.Error())
 	}
 }
