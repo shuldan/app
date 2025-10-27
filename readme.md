@@ -117,7 +117,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/shuldan/app/pkg/application"
+	"github.com/shuldan/app"
 )
 
 type HTTPServer struct{}
@@ -140,19 +140,19 @@ func (h *HTTPServer) Stop(_ context.Context) error {
 }
 
 func main() {
-	app := application.New(
-		application.WithName("my-service"),
-		application.WithVersion("1.0.0"),
-		application.WithEnvironment("production"),
-		application.WithGracefulTimeout(15*time.Second),
+	a := app.New(
+		app.WithName("my-service"),
+		app.WithVersion("1.0.0"),
+		app.WithEnvironment("production"),
+		app.WithGracefulTimeout(15*time.Second),
 	)
 
-	if err := app.Register(&HTTPServer{}); err != nil {
+	if err := a.Register(&HTTPServer{}); err != nil {
 		slog.Error(err.Error())
 	}
 
 	ctx := context.Background()
-	if err := app.Run(ctx); err != nil {
+	if err := a.Run(ctx); err != nil {
 		slog.Error(err.Error())
 	}
 }
