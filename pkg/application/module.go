@@ -1,7 +1,9 @@
 package application
 
+import "context"
+
 type Module interface {
-	Register() error
-	Start() error
-	Stop() error
+	Register(ctx context.Context) error
+	Start(ctx context.Context) error
+	Stop(ctx context.Context) error
 }

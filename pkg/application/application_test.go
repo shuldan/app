@@ -21,13 +21,13 @@ type MockModule struct {
 	mu          sync.Mutex
 }
 
-func (m *MockModule) Register() error {
+func (m *MockModule) Register(_ context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.registerErr
 }
 
-func (m *MockModule) Start() error {
+func (m *MockModule) Start(_ context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.startErr != nil {
@@ -37,7 +37,7 @@ func (m *MockModule) Start() error {
 	return nil
 }
 
-func (m *MockModule) Stop() error {
+func (m *MockModule) Stop(_ context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if m.stopErr != nil {
@@ -70,14 +70,14 @@ func TestNewApplication(t *testing.T) {
 		WithGracefulTimeout(5*time.Second),
 	)
 
-	if app.name != "test-app" {
-		t.Errorf("expected name 'test-app', got %s", app.name)
+	if app.meta.name != "test-app" {
+		t.Errorf("expected name 'test-app', got %s", app.meta.name)
 	}
-	if app.version != "1.0.0" {
-		t.Errorf("expected version '1.0.0', got %s", app.version)
+	if app.meta.version != "1.0.0" {
+		t.Errorf("expected version '1.0.0', got %s", app.meta.version)
 	}
-	if app.environment != "test" {
-		t.Errorf("expected environment 'test', got %s", app.environment)
+	if app.meta.environment != "test" {
+		t.Errorf("expected environment 'test', got %s", app.meta.environment)
 	}
 	if app.shutdownTimeout != 5*time.Second {
 		t.Errorf("expected timeout 5s, got %v", app.shutdownTimeout)
@@ -93,7 +93,7 @@ func TestApplicationRegister(t *testing.T) {
 		t.Errorf("expected no error, got %v", err)
 	}
 
-	modules := app.registry.all()
+	modules := app.registry.getAll()
 	if len(modules) != 1 {
 		t.Errorf("expected 1 module, got %d", len(modules))
 	}
@@ -116,7 +116,10 @@ func TestApplicationStartSuccess(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	err = app.start()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err = app.start(ctx, cancel)
 	if err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}
@@ -125,7 +128,7 @@ func TestApplicationStartSuccess(t *testing.T) {
 		t.Error("modules should be started")
 	}
 
-	if app.startTime.IsZero() {
+	if app.meta.startTime.IsZero() {
 		t.Error("start time should be set")
 	}
 }
@@ -135,12 +138,15 @@ func TestApplicationStartAlreadyRunning(t *testing.T) {
 	module := &MockModule{}
 	_ = app.Register(module)
 
-	err := app.start()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := app.start(ctx, cancel)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	err = app.start()
+	err = app.start(ctx, cancel)
 	if err == nil {
 		t.Error("expected error for already running app")
 	}
@@ -151,7 +157,10 @@ func TestApplicationStartModuleRegisterError(t *testing.T) {
 	module := &MockModule{registerErr: errors.New("register error")}
 	_ = app.Register(module)
 
-	err := app.start()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := app.start(ctx, cancel)
 	if err == nil {
 		t.Error("expected error, got nil")
 	}
@@ -165,7 +174,10 @@ func TestApplicationStartModuleStartError(t *testing.T) {
 	_ = app.Register(module1)
 	_ = app.Register(module2)
 
-	err := app.start()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := app.start(ctx, cancel)
 	if err == nil {
 		t.Error("expected error, got nil")
 	}
@@ -181,12 +193,16 @@ func TestApplicationStartModuleStartError(t *testing.T) {
 func TestApplicationStopSuccess(t *testing.T) {
 	app := New()
 	atomic.CompareAndSwapInt32(&app.isRunning, 0, 1)
-	err := app.stop()
+
+	_, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := app.stop(cancel)
 	if err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}
 
-	if app.stopTime.IsZero() {
+	if app.meta.stopTime.IsZero() {
 		t.Error("stop time should be set")
 	}
 }
@@ -194,7 +210,10 @@ func TestApplicationStopSuccess(t *testing.T) {
 func TestApplicationStopNotRunning(t *testing.T) {
 	app := New()
 
-	err := app.stop()
+	_, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := app.stop(cancel)
 	if err == nil {
 		t.Error("expected error for not running app")
 	}
@@ -205,18 +224,15 @@ func TestApplicationRunEmptyRegistry(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	app.ctx = ctx
-	app.cancel = cancel
-
 	done := make(chan error, 1)
 	go func() {
-		done <- app.Run()
+		done <- app.Run(ctx)
 	}()
 
 	select {
 	case err := <-done:
-		if err != nil {
-			t.Errorf("expected no error, got %v", err)
+		if err != nil && err != context.DeadlineExceeded {
+			t.Errorf("expected no error or deadline exceeded, got %v", err)
 		}
 	case <-time.After(200 * time.Millisecond):
 		t.Error("test timeout")
@@ -231,18 +247,15 @@ func TestApplicationRunWithModules(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	app.ctx = ctx
-	app.cancel = cancel
-
 	done := make(chan error, 1)
 	go func() {
-		done <- app.Run()
+		done <- app.Run(ctx)
 	}()
 
 	select {
 	case err := <-done:
-		if err != nil {
-			t.Errorf("expected no error, got %v", err)
+		if err != nil && err != context.DeadlineExceeded {
+			t.Errorf("expected no error or deadline exceeded, got %v", err)
 		}
 		if !module.IsStarted() {
 			t.Error("module should be started")
@@ -257,18 +270,16 @@ func TestApplicationRunWithSignal(t *testing.T) {
 	module := &MockModule{}
 	_ = app.Register(module)
 
-	testCtx, testCancel := context.WithCancel(context.Background())
-	app.ctx = testCtx
-	app.cancel = testCancel
+	ctx, cancel := context.WithCancel(context.Background())
 
 	done := make(chan error, 1)
 	go func() {
-		done <- app.Run()
+		done <- app.Run(ctx)
 	}()
 
 	go func() {
 		time.Sleep(10 * time.Millisecond)
-		testCancel()
+		cancel()
 	}()
 
 	select {
@@ -286,18 +297,16 @@ func TestApplicationGracefulShutdownSuccess(t *testing.T) {
 	module := &MockModule{}
 	_ = app.Register(module)
 
-	testCtx, testCancel := context.WithCancel(context.Background())
-	app.ctx = testCtx
-	app.cancel = testCancel
+	ctx, cancel := context.WithCancel(context.Background())
 
 	done := make(chan error, 1)
 	go func() {
-		done <- app.Run()
+		done <- app.Run(ctx)
 	}()
 
 	go func() {
 		time.Sleep(10 * time.Millisecond)
-		testCancel()
+		cancel()
 	}()
 
 	select {
@@ -321,18 +330,16 @@ func TestApplicationGracefulShutdownTimeout(t *testing.T) {
 	}
 	_ = app.Register(slowModule)
 
-	testCtx, testCancel := context.WithCancel(context.Background())
-	app.ctx = testCtx
-	app.cancel = testCancel
+	ctx, cancel := context.WithCancel(context.Background())
 
 	done := make(chan error, 1)
 	go func() {
-		done <- app.Run()
+		done <- app.Run(ctx)
 	}()
 
 	go func() {
 		time.Sleep(5 * time.Millisecond)
-		testCancel()
+		cancel()
 	}()
 
 	select {
@@ -356,7 +363,7 @@ func TestRegistryRegister(t *testing.T) {
 		t.Errorf("expected no error, got %v", err)
 	}
 
-	modules := r.all()
+	modules := r.getAll()
 	if len(modules) != 1 {
 		t.Errorf("expected 1 module, got %d", len(modules))
 	}
@@ -372,7 +379,7 @@ func TestRegistryAll(t *testing.T) {
 	_ = r.register(module1)
 	_ = r.register(module2)
 
-	modules := r.all()
+	modules := r.getAll()
 	if len(modules) != 2 {
 		t.Errorf("expected 2 modules, got %d", len(modules))
 	}
@@ -382,19 +389,20 @@ func TestRegistryStartAllSuccess(t *testing.T) {
 	r := &registry{
 		modules: make([]Module, 0),
 	}
+	runner := &runner{registry: r}
 	module1 := &MockModule{}
 	module2 := &MockModule{}
 
 	_ = r.register(module1)
 	_ = r.register(module2)
 
-	err := r.startAll()
+	err := runner.startAll(context.Background())
 	if err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}
 
 	if !module1.IsStarted() || !module2.IsStarted() {
-		t.Error("all modules should be started")
+		t.Error("getAll modules should be started")
 	}
 }
 
@@ -402,11 +410,12 @@ func TestRegistryStartAllRegisterError(t *testing.T) {
 	r := &registry{
 		modules: make([]Module, 0),
 	}
+	runner := &runner{registry: r}
 	module := &MockModule{registerErr: errors.New("register error")}
 
 	_ = r.register(module)
 
-	err := r.startAll()
+	err := runner.startAll(context.Background())
 	if err == nil {
 		t.Error("expected error, got nil")
 	}
@@ -416,13 +425,14 @@ func TestRegistryStartAllStartError(t *testing.T) {
 	r := &registry{
 		modules: make([]Module, 0),
 	}
+	runner := &runner{registry: r}
 	module1 := &MockModule{}
 	module2 := &MockModule{startErr: errors.New("start error")}
 
 	_ = r.register(module1)
 	_ = r.register(module2)
 
-	err := r.startAll()
+	err := runner.startAll(context.Background())
 	if err == nil {
 		t.Error("expected error, got nil")
 	}
@@ -439,16 +449,19 @@ func TestRegistryShutdownStarted(t *testing.T) {
 	r := &registry{
 		modules: make([]Module, 0),
 	}
+	runner := &runner{registry: r}
 	module1 := &MockModule{}
 	module2 := &MockModule{}
 
 	_ = r.register(module1)
 	_ = r.register(module2)
 
-	_ = module1.Start()
-	_ = module2.Start()
+	ctx := context.Background()
 
-	r.shutdownStarted(1)
+	_ = module1.Start(ctx)
+	_ = module2.Start(ctx)
+
+	runner.shutdownStarted(ctx, 1)
 
 	if !module1.IsStopped() {
 		t.Error("module1 should be stopped")
@@ -462,22 +475,25 @@ func TestRegistryShutdownAllSuccess(t *testing.T) {
 	r := &registry{
 		modules: make([]Module, 0),
 	}
+	runner := &runner{registry: r}
 	module1 := &MockModule{}
 	module2 := &MockModule{}
 
 	_ = r.register(module1)
 	_ = r.register(module2)
 
-	_ = module1.Start()
-	_ = module2.Start()
+	ctx := context.Background()
 
-	err := r.shutdownAll()
+	_ = module1.Start(ctx)
+	_ = module2.Start(ctx)
+
+	err := runner.shutdownAll(ctx)
 	if err != nil {
 		t.Errorf("expected no error, got %v", err)
 	}
 
 	if !module1.IsStopped() || !module2.IsStopped() {
-		t.Error("all modules should be stopped")
+		t.Error("getAll modules should be stopped")
 	}
 }
 
@@ -485,6 +501,7 @@ func TestRegistryShutdownAllWithError(t *testing.T) {
 	r := &registry{
 		modules: make([]Module, 0),
 	}
+	runner := &runner{registry: r}
 	err1 := errors.New("stop error 1")
 	err2 := errors.New("stop error 2")
 	module1 := &MockModule{stopErr: err1}
@@ -493,7 +510,7 @@ func TestRegistryShutdownAllWithError(t *testing.T) {
 	_ = r.register(module1)
 	_ = r.register(module2)
 
-	err := r.shutdownAll()
+	err := runner.shutdownAll(context.Background())
 	if err == nil {
 		t.Error("expected error, got nil")
 	}
@@ -526,7 +543,7 @@ func TestRegistryConcurrency(t *testing.T) {
 
 	wg.Wait()
 
-	modules := r.all()
+	modules := r.getAll()
 	if len(modules) != goroutines {
 		t.Errorf("expected %d modules, got %d", goroutines, len(modules))
 	}
@@ -537,18 +554,16 @@ func TestApplicationRunWithGracefulShutdownWithoutTimeout(t *testing.T) {
 	module := &MockModule{}
 	_ = app.Register(module)
 
-	testCtx, testCancel := context.WithCancel(context.Background())
-	app.ctx = testCtx
-	app.cancel = testCancel
+	ctx, cancel := context.WithCancel(context.Background())
 
 	done := make(chan error, 1)
 	go func() {
-		done <- app.Run()
+		done <- app.Run(ctx)
 	}()
 
 	go func() {
 		time.Sleep(10 * time.Millisecond)
-		testCancel()
+		cancel()
 	}()
 
 	select {
@@ -567,18 +582,16 @@ func TestApplicationRunWithGracefulShutdownError(t *testing.T) {
 	module := &MockModule{stopErr: stopError}
 	_ = app.Register(module)
 
-	testCtx, testCancel := context.WithCancel(context.Background())
-	app.ctx = testCtx
-	app.cancel = testCancel
+	ctx, cancel := context.WithCancel(context.Background())
 
 	done := make(chan error, 1)
 	go func() {
-		done <- app.Run()
+		done <- app.Run(ctx)
 	}()
 
 	go func() {
 		time.Sleep(10 * time.Millisecond)
-		testCancel()
+		cancel()
 	}()
 
 	select {
@@ -594,13 +607,11 @@ func TestApplicationRunWithGracefulShutdownError(t *testing.T) {
 func TestApplicationSetupSignalHandler(t *testing.T) {
 	app := New()
 
-	testCtx, testCancel := context.WithCancel(context.Background())
-	app.ctx = testCtx
-	app.cancel = testCancel
+	ctx, cancel := context.WithCancel(context.Background())
 
 	done := make(chan bool, 1)
 	go func() {
-		app.setupSignalHandler()
+		app.setupSignalHandler(ctx, cancel)
 		done <- true
 	}()
 
@@ -625,17 +636,15 @@ func TestApplicationSetupSignalHandler(t *testing.T) {
 func TestApplicationSetupSignalHandlerContextDone(t *testing.T) {
 	app := New()
 
-	testCtx, testCancel := context.WithCancel(context.Background())
-	app.ctx = testCtx
-	app.cancel = testCancel
+	ctx, cancel := context.WithCancel(context.Background())
 
 	done := make(chan bool, 1)
 	go func() {
-		app.setupSignalHandler()
+		app.setupSignalHandler(ctx, cancel)
 		done <- true
 	}()
 
-	testCancel()
+	cancel()
 
 	select {
 	case <-done:
@@ -651,17 +660,15 @@ func TestApplicationRunModuleStartError(t *testing.T) {
 	module := &MockModule{startErr: startError}
 	_ = app.Register(module)
 
-	testCtx, testCancel := context.WithCancel(context.Background())
-	app.ctx = testCtx
-	app.cancel = testCancel
+	ctx, cancel := context.WithCancel(context.Background())
 
 	done := make(chan error, 1)
 	go func() {
-		done <- app.Run()
+		done <- app.Run(ctx)
 	}()
 
 	time.Sleep(50 * time.Millisecond)
-	testCancel() // Ensure we don't hang
+	cancel() // Ensure we don't hang
 
 	select {
 	case err := <-done:
@@ -683,7 +690,10 @@ func TestApplicationStopErrorDuringStartFailure(t *testing.T) {
 	}
 	_ = app.Register(module)
 
-	err := app.start()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := app.start(ctx, cancel)
 	if err == nil {
 		t.Error("expected start error, got nil")
 	}
@@ -697,10 +707,11 @@ func TestRegistryShutdownStartedWithZeroCount(t *testing.T) {
 	r := &registry{
 		modules: make([]Module, 0),
 	}
+	runner := &runner{registry: r}
 	module := &MockModule{}
 	_ = r.register(module)
 
-	r.shutdownStarted(0)
+	runner.shutdownStarted(context.Background(), 0)
 
 	if module.IsStopped() {
 		t.Error("module should not be stopped")
@@ -711,10 +722,11 @@ func TestRegistryShutdownStartedWithNegativeCount(t *testing.T) {
 	r := &registry{
 		modules: make([]Module, 0),
 	}
+	runner := &runner{registry: r}
 	module := &MockModule{}
 	_ = r.register(module)
 
-	r.shutdownStarted(-1)
+	runner.shutdownStarted(context.Background(), -1)
 
 	if module.IsStopped() {
 		t.Error("module should not be stopped")
@@ -725,10 +737,11 @@ func TestRegistryShutdownStartedWithCountGreaterThanModules(t *testing.T) {
 	r := &registry{
 		modules: make([]Module, 0),
 	}
+	runner := &runner{registry: r}
 	module := &MockModule{}
 	_ = r.register(module)
 
-	r.shutdownStarted(10)
+	runner.shutdownStarted(context.Background(), 10)
 
 	if !module.IsStopped() {
 		t.Error("module should be stopped")
@@ -736,15 +749,16 @@ func TestRegistryShutdownStartedWithCountGreaterThanModules(t *testing.T) {
 }
 
 func TestApplicationRunWithContextAlreadyCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // Cancel immediately
+
 	app := New()
 	module := &MockModule{}
 	_ = app.Register(module)
 
-	app.cancel()
-
 	done := make(chan error, 1)
 	go func() {
-		done <- app.Run()
+		done <- app.Run(ctx)
 	}()
 
 	select {
@@ -762,19 +776,16 @@ func TestApplicationRunSignalHandler(t *testing.T) {
 	module := &MockModule{}
 	_ = app.Register(module)
 
-	testCtx, testCancel := context.WithCancel(context.Background())
-	app.ctx = testCtx
-	app.cancel = testCancel
+	ctx, cancel := context.WithCancel(context.Background())
 
 	done := make(chan error, 1)
 	go func() {
-		done <- app.Run()
+		done <- app.Run(ctx)
 	}()
 
 	go func() {
 		time.Sleep(10 * time.Millisecond)
-
-		testCancel()
+		cancel()
 	}()
 
 	select {
@@ -802,18 +813,16 @@ func TestApplicationRunGracefulShutdownTimeout(t *testing.T) {
 	}
 	_ = app.Register(slowModule)
 
-	testCtx, testCancel := context.WithCancel(context.Background())
-	app.ctx = testCtx
-	app.cancel = testCancel
+	ctx, cancel := context.WithCancel(context.Background())
 
 	done := make(chan error, 1)
 	go func() {
-		done <- app.Run()
+		done <- app.Run(ctx)
 	}()
 
 	go func() {
 		time.Sleep(5 * time.Millisecond)
-		testCancel()
+		cancel()
 	}()
 
 	select {
@@ -834,18 +843,16 @@ func TestApplicationRunWithoutGracefulTimeout(t *testing.T) {
 	module := &MockModule{}
 	_ = app.Register(module)
 
-	testCtx, testCancel := context.WithCancel(context.Background())
-	app.ctx = testCtx
-	app.cancel = testCancel
+	ctx, cancel := context.WithCancel(context.Background())
 
 	done := make(chan error, 1)
 	go func() {
-		done <- app.Run()
+		done <- app.Run(ctx)
 	}()
 
 	go func() {
 		time.Sleep(10 * time.Millisecond)
-		testCancel()
+		cancel()
 	}()
 
 	select {

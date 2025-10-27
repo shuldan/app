@@ -4,19 +4,19 @@ import "time"
 
 func WithName(name string) func(application *Application) {
 	return func(application *Application) {
-		application.name = name
+		application.meta.name = name
 	}
 }
 
 func WithVersion(version string) func(application *Application) {
 	return func(application *Application) {
-		application.version = version
+		application.meta.version = version
 	}
 }
 
 func WithEnvironment(environment string) func(application *Application) {
 	return func(application *Application) {
-		application.environment = environment
+		application.meta.environment = environment
 	}
 }
 

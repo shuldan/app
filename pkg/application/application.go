@@ -6,33 +6,30 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
 )
 
 type Application struct {
-	name            string
-	version         string
-	environment     string
-	ctx             context.Context
-	cancel          context.CancelFunc
-	startTime       time.Time
-	stopTime        time.Time
-	registry        registry
+	meta            meta
+	registry        *registry
+	runner          *runner
 	isRunning       int32
 	shutdownTimeout time.Duration
 }
 
 func New(opts ...func(*Application)) *Application {
-	ctx, cancel := context.WithCancel(context.Background())
+	reg := &registry{
+		modules: make([]Module, 0),
+		mu:      sync.RWMutex{},
+	}
 	a := &Application{
-		ctx:    ctx,
-		cancel: cancel,
-		registry: registry{
-			modules: make([]Module, 0),
+		registry: reg,
+		runner: &runner{
+			registry: reg,
 		},
-
 		shutdownTimeout: 10 * time.Second,
 	}
 
@@ -47,22 +44,24 @@ func (a *Application) Register(module Module) error {
 	return a.registry.register(module)
 }
 
-func (a *Application) Run() error {
-	go a.setupSignalHandler()
+func (a *Application) Run(ctx context.Context) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	go a.setupSignalHandler(ctx, cancel)
 
-	if err := a.start(); err != nil {
+	if err := a.start(ctx, cancel); err != nil {
 		return err
 	}
 
-	<-a.ctx.Done()
+	<-ctx.Done()
 
 	if a.shutdownTimeout > 0 {
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), a.shutdownTimeout)
-		defer cancel()
+		shutdownCtx, timeoutCancel := context.WithTimeout(context.Background(), a.shutdownTimeout)
+		defer timeoutCancel()
 
 		errCh := make(chan error, 1)
 		go func() {
-			if regErr := a.registry.shutdownAll(); regErr != nil {
+			if regErr := a.runner.shutdownAll(ctx); regErr != nil {
 				errCh <- regErr
 			} else {
 				errCh <- nil
@@ -79,30 +78,30 @@ func (a *Application) Run() error {
 		return err
 	}
 
-	if err := a.registry.shutdownAll(); err != nil {
+	if err := a.runner.shutdownAll(ctx); err != nil {
 		return err
 	}
 
 	return nil
 }
 
-func (a *Application) start() error {
+func (a *Application) start(ctx context.Context, cancelFn context.CancelFunc) error {
 	if !atomic.CompareAndSwapInt32(&a.isRunning, 0, 1) {
 		return errors.New("application is already running")
 	}
 
-	a.startTime = time.Now()
+	a.meta.startTime = time.Now()
 
 	slog.Info(
 		"application is starting",
-		"time", a.startTime,
-		"name", a.name,
-		"version", a.version,
-		"environment", a.environment,
+		"time", a.meta.startTime,
+		"name", a.meta.name,
+		"version", a.meta.version,
+		"environment", a.meta.environment,
 	)
 
-	if err := a.registry.startAll(); err != nil {
-		if err := a.stop(); err != nil {
+	if err := a.runner.startAll(ctx); err != nil {
+		if err := a.stop(cancelFn); err != nil {
 			return err
 		}
 		return err
@@ -110,34 +109,34 @@ func (a *Application) start() error {
 
 	slog.Info(
 		"modules started",
-		"time", a.startTime,
-		"name", a.name,
-		"version", a.version,
-		"environment", a.environment,
+		"time", a.meta.startTime,
+		"name", a.meta.name,
+		"version", a.meta.version,
+		"environment", a.meta.environment,
 	)
 
 	return nil
 }
 
-func (a *Application) stop() error {
+func (a *Application) stop(cancelFn context.CancelFunc) error {
 	if !atomic.CompareAndSwapInt32(&a.isRunning, 1, 0) {
 		return errors.New("application is already stopped")
 	}
-	a.cancel()
-	a.stopTime = time.Now()
+	cancelFn()
+	a.meta.stopTime = time.Now()
 
 	slog.Info(
 		"application is stopping",
-		"time", a.stopTime,
-		"name", a.name,
-		"version", a.version,
-		"environment", a.environment,
+		"time", a.meta.stopTime,
+		"name", a.meta.name,
+		"version", a.meta.version,
+		"environment", a.meta.environment,
 	)
 
 	return nil
 }
 
-func (a *Application) setupSignalHandler() {
+func (a *Application) setupSignalHandler(ctx context.Context, cancelFn context.CancelFunc) {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sigChan)
@@ -147,18 +146,18 @@ func (a *Application) setupSignalHandler() {
 		slog.Info(
 			"application is shutting down",
 			"time", time.Now(),
-			"name", a.name,
-			"version", a.version,
-			"environment", a.environment,
+			"name", a.meta.name,
+			"version", a.meta.version,
+			"environment", a.meta.environment,
 		)
-		_ = a.stop()
-	case <-a.ctx.Done():
+		_ = a.stop(cancelFn)
+	case <-ctx.Done():
 		slog.Info(
 			"application is shutting down",
 			"time", time.Now(),
-			"name", a.name,
-			"version", a.version,
-			"environment", a.environment,
+			"name", a.meta.name,
+			"version", a.meta.version,
+			"environment", a.meta.environment,
 		)
 		return
 	}
