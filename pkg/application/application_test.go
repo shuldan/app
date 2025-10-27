@@ -14,6 +14,7 @@ import (
 type MockModule struct {
 	registerErr error
 	startErr    error
+	startFn     func() error
 	stopErr     error
 	stopFn      func()
 	started     bool
@@ -32,6 +33,11 @@ func (m *MockModule) Start(_ context.Context) error {
 	defer m.mu.Unlock()
 	if m.startErr != nil {
 		return m.startErr
+	}
+	if m.startFn != nil {
+		if err := m.startFn(); err != nil {
+			return err
+		}
 	}
 	m.started = true
 	return nil
@@ -231,7 +237,7 @@ func TestApplicationRunEmptyRegistry(t *testing.T) {
 
 	select {
 	case err := <-done:
-		if err != nil && err != context.DeadlineExceeded {
+		if err != nil && !errors.Is(err, context.DeadlineExceeded) {
 			t.Errorf("expected no error or deadline exceeded, got %v", err)
 		}
 	case <-time.After(200 * time.Millisecond):
@@ -254,7 +260,7 @@ func TestApplicationRunWithModules(t *testing.T) {
 
 	select {
 	case err := <-done:
-		if err != nil && err != context.DeadlineExceeded {
+		if err != nil && !errors.Is(err, context.DeadlineExceeded) {
 			t.Errorf("expected no error or deadline exceeded, got %v", err)
 		}
 		if !module.IsStarted() {
@@ -830,8 +836,8 @@ func TestApplicationRunGracefulShutdownTimeout(t *testing.T) {
 		if err == nil {
 			t.Error("expected timeout error, got nil")
 		}
-		if err != nil && err.Error() != "graceful shutdownAll timed out after 10ms" {
-			t.Errorf("expected timeout error message, got %v", err)
+		if err != nil && !errors.Is(err, ErrGracefulShutdownAllTimedOut) {
+			t.Errorf("expected %v, got %v", ErrGracefulShutdownAllTimedOut, err)
 		}
 	case <-time.After(100 * time.Millisecond):
 		t.Error("test timeout")
@@ -865,5 +871,61 @@ func TestApplicationRunWithoutGracefulTimeout(t *testing.T) {
 		}
 	case <-time.After(100 * time.Millisecond):
 		t.Error("test timeout")
+	}
+}
+
+func TestApplicationRunShutdownErrorWithoutTimeout(t *testing.T) {
+	app := New(WithGracefulTimeout(0))
+	stopError := errors.New("stop error")
+	module := &MockModule{stopErr: stopError}
+	_ = app.Register(module)
+
+	ctx, cancel := context.WithCancel(context.Background())
+
+	done := make(chan error, 1)
+	go func() {
+		done <- app.Run(ctx)
+	}()
+
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		cancel()
+	}()
+
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Error("expected shutdown error, got nil")
+		}
+		if !errors.Is(err, stopError) {
+			t.Errorf("expected stop error, got %v", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Error("test timeout")
+	}
+}
+
+func TestApplication_Start_ReturnsStartAllError(t *testing.T) {
+	app := New()
+	module := &MockModule{
+		startFn: func() error {
+			atomic.CompareAndSwapInt32(&app.isRunning, 1, 0)
+			return errors.New("start error")
+		},
+	}
+	_ = app.Register(module)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := app.start(ctx, cancel)
+	if err == nil {
+		t.Error("expected start error, got nil")
+	}
+	if !errors.Is(err, ErrApplicationAlreadyStopped) {
+		t.Errorf("expected start error, got %v", err)
+	}
+	if atomic.LoadInt32(&app.isRunning) != 0 {
+		t.Error("expected application to be not running")
 	}
 }

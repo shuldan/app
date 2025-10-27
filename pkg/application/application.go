@@ -3,13 +3,18 @@ package application
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"os"
 	"os/signal"
 	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
+)
+
+var (
+	ErrApplicationAlreadyRunning   = errors.New("application is already running")
+	ErrApplicationAlreadyStopped   = errors.New("application is already stopped")
+	ErrGracefulShutdownAllTimedOut = errors.New("graceful shutdownAll timed out")
 )
 
 type Application struct {
@@ -68,14 +73,12 @@ func (a *Application) Run(ctx context.Context) error {
 			}
 		}()
 
-		var err error
 		select {
-		case err = <-errCh:
+		case err := <-errCh:
+			return err
 		case <-shutdownCtx.Done():
-			err = errors.New("graceful shutdownAll timed out after " + a.shutdownTimeout.String())
+			return ErrGracefulShutdownAllTimedOut
 		}
-
-		return err
 	}
 
 	if err := a.runner.shutdownAll(ctx); err != nil {
@@ -87,18 +90,12 @@ func (a *Application) Run(ctx context.Context) error {
 
 func (a *Application) start(ctx context.Context, cancelFn context.CancelFunc) error {
 	if !atomic.CompareAndSwapInt32(&a.isRunning, 0, 1) {
-		return errors.New("application is already running")
+		return ErrApplicationAlreadyRunning
 	}
 
 	a.meta.startTime = time.Now()
 
-	slog.Info(
-		"application is starting",
-		"time", a.meta.startTime,
-		"name", a.meta.name,
-		"version", a.meta.version,
-		"environment", a.meta.environment,
-	)
+	ctx = a.meta.enrichContext(ctx)
 
 	if err := a.runner.startAll(ctx); err != nil {
 		if err := a.stop(cancelFn); err != nil {
@@ -107,31 +104,15 @@ func (a *Application) start(ctx context.Context, cancelFn context.CancelFunc) er
 		return err
 	}
 
-	slog.Info(
-		"modules started",
-		"time", a.meta.startTime,
-		"name", a.meta.name,
-		"version", a.meta.version,
-		"environment", a.meta.environment,
-	)
-
 	return nil
 }
 
 func (a *Application) stop(cancelFn context.CancelFunc) error {
 	if !atomic.CompareAndSwapInt32(&a.isRunning, 1, 0) {
-		return errors.New("application is already stopped")
+		return ErrApplicationAlreadyStopped
 	}
 	cancelFn()
 	a.meta.stopTime = time.Now()
-
-	slog.Info(
-		"application is stopping",
-		"time", a.meta.stopTime,
-		"name", a.meta.name,
-		"version", a.meta.version,
-		"environment", a.meta.environment,
-	)
 
 	return nil
 }
@@ -143,22 +124,8 @@ func (a *Application) setupSignalHandler(ctx context.Context, cancelFn context.C
 
 	select {
 	case <-sigChan:
-		slog.Info(
-			"application is shutting down",
-			"time", time.Now(),
-			"name", a.meta.name,
-			"version", a.meta.version,
-			"environment", a.meta.environment,
-		)
 		_ = a.stop(cancelFn)
 	case <-ctx.Done():
-		slog.Info(
-			"application is shutting down",
-			"time", time.Now(),
-			"name", a.meta.name,
-			"version", a.meta.version,
-			"environment", a.meta.environment,
-		)
 		return
 	}
 }
