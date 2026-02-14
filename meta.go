@@ -11,10 +11,10 @@ type appEnvironmentKeyType struct{}
 type appStartTimeKeyType struct{}
 
 var (
-	ContextKeyAppName        = appNameKeyType{}
-	ContextKeyAppVersion     = appVersionKeyType{}
-	ContextKeyAppEnvironment = appEnvironmentKeyType{}
-	ContextKeyAppStartTime   = appStartTimeKeyType{}
+	contextKeyAppName        = appNameKeyType{}
+	contextKeyAppVersion     = appVersionKeyType{}
+	contextKeyAppEnvironment = appEnvironmentKeyType{}
+	contextKeyAppStartTime   = appStartTimeKeyType{}
 )
 
 type meta struct {
@@ -26,9 +26,37 @@ type meta struct {
 }
 
 func (m *meta) enrichContext(ctx context.Context) context.Context {
-	ctx = context.WithValue(ctx, ContextKeyAppName, m.name)
-	ctx = context.WithValue(ctx, ContextKeyAppVersion, m.version)
-	ctx = context.WithValue(ctx, ContextKeyAppEnvironment, m.environment)
-	ctx = context.WithValue(ctx, ContextKeyAppStartTime, m.startTime)
+	ctx = context.WithValue(ctx, contextKeyAppName, m.name)
+	ctx = context.WithValue(ctx, contextKeyAppVersion, m.version)
+	ctx = context.WithValue(ctx, contextKeyAppEnvironment, m.environment)
+	ctx = context.WithValue(ctx, contextKeyAppStartTime, m.startTime)
 	return ctx
+}
+
+func (m *meta) uptime() time.Duration {
+	end := m.stopTime
+	if end.IsZero() {
+		end = time.Now()
+	}
+	return end.Sub(m.startTime)
+}
+
+func NameFromContext(ctx context.Context) string {
+	v, _ := ctx.Value(contextKeyAppName).(string)
+	return v
+}
+
+func VersionFromContext(ctx context.Context) string {
+	v, _ := ctx.Value(contextKeyAppVersion).(string)
+	return v
+}
+
+func EnvironmentFromContext(ctx context.Context) string {
+	v, _ := ctx.Value(contextKeyAppEnvironment).(string)
+	return v
+}
+
+func StartTimeFromContext(ctx context.Context) time.Time {
+	v, _ := ctx.Value(contextKeyAppStartTime).(time.Time)
+	return v
 }
